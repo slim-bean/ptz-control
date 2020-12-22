@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/icholy/digest"
@@ -17,6 +18,10 @@ import (
 
 const (
 	deadzone = 0.1
+	Up       = "Up"
+	Down     = "Down"
+	Left     = "Left"
+	Right    = "Right"
 )
 
 type Config struct {
@@ -37,7 +42,6 @@ func main() {
 	// monitor for signals in the background
 	go func() {
 		s := <-sigc
-		//ticker.Stop()
 		fmt.Println("\nreceived signal:", s)
 		os.Exit(0)
 	}()
@@ -62,17 +66,23 @@ func main() {
 		},
 	}
 
-	evts := joysticks.Capture(
-		joysticks.Channel{1, joysticks.HID.OnClose}, // evts[0] set to receive button #1 closes events
-		joysticks.Channel{1, joysticks.HID.OnOpen},
-		joysticks.Channel{2, joysticks.HID.OnClose}, // evts[0] set to receive button #1 closes events
-		joysticks.Channel{2, joysticks.HID.OnOpen},
-		joysticks.Channel{1, joysticks.HID.OnMove},
-	)
+	device := joysticks.Connect(1)
+
+	aPress := device.OnClose(1)
+	aUnpress := device.OnOpen(1)
+	bPress := device.OnClose(2)
+	bUnpress := device.OnOpen(2)
+	leftMove := device.OnMove(1)
+	dpadMove := device.OnMove(4)
+
+	go device.ParcelOutEvents()
+
+	prevX := 0
+	prevY := 0
 
 	for {
 		select {
-		case <-evts[0]:
+		case <-aPress:
 			fmt.Println("Zoom Out Button Pushed")
 			res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomWide&arg1=0&arg2=1&arg3=0&arg4=0")
 			if err != nil {
@@ -81,7 +91,7 @@ func main() {
 			}
 			fmt.Println("Zoom in return: ", res.StatusCode)
 			res.Body.Close()
-		case <-evts[1]:
+		case <-aUnpress:
 			fmt.Println("Zoom Out Button Unpushed")
 			res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomWide&arg1=0&arg2=1&arg3=0&arg4=0")
 			if err != nil {
@@ -89,7 +99,7 @@ func main() {
 				continue
 			}
 			fmt.Println("Zoom out return: ", res.StatusCode)
-		case <-evts[2]:
+		case <-bPress:
 			fmt.Println("Zoom In Button Pushed")
 			res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomTele&arg1=0&arg2=1&arg3=0&arg4=0")
 			if err != nil {
@@ -98,7 +108,7 @@ func main() {
 			}
 			fmt.Println("Zoom in return: ", res.StatusCode)
 			res.Body.Close()
-		case <-evts[3]:
+		case <-bUnpress:
 			fmt.Println("Zoom In Button Unpushed")
 			res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomTele&arg1=0&arg2=1&arg3=0&arg4=0")
 			if err != nil {
@@ -107,22 +117,93 @@ func main() {
 			}
 			fmt.Println("Zoom out return: ", res.StatusCode)
 			res.Body.Close()
-		case e := <-evts[4]:
-			x := e.(joysticks.CoordsEvent).X
-			y := e.(joysticks.CoordsEvent).Y
+		case e := <-leftMove:
+			// Joystick range is -1 to +1, multiply by 10 to make maths a little easier for my brain
+			// round to integer for more coarse stepping
+			x := int(math.Round(float64(e.(joysticks.CoordsEvent).X * 10)))
+			y := int(math.Round(float64(e.(joysticks.CoordsEvent).Y * 10)))
 
-			if x > 10000 {
-
+			if x != prevX {
+				prevX = x
+				if math.Abs(float64(x)) < 2 {
+					ptzStop(conf, client)
+					fmt.Println("Pan Stopped")
+				}
+				if x > 2 {
+					spd := strconv.Itoa(x - 2)
+					ptzMove(conf, client, Right, spd)
+					fmt.Println("Panning right", spd)
+				}
+				if x < -2 {
+					spd := strconv.Itoa(int(math.Abs(float64(x + 2))))
+					ptzMove(conf, client, Left, spd)
+					fmt.Println("Panning left", spd)
+				}
 			}
 
-			// Speed is in a range of 1-8
-			// http://<ip>/cgi-bin/ptz.cgi?action=[action]&channel=[ch]&code=[code]&arg1=[argstr]& arg2=[argstr]&arg3=[argstr]
+			if y != prevY {
+				prevY = y
+				if math.Abs(float64(y)) < 2 {
+					ptzStop(conf, client)
+					fmt.Println("Tilt Stopped")
+				}
+				if y > 2 {
+					spd := strconv.Itoa(y - 2)
+					ptzMove(conf, client, Down, spd)
+					fmt.Println("Tilt down", spd)
+				}
+				if y < -2 {
+					spd := strconv.Itoa(int(math.Abs(float64(y + 2))))
+					ptzMove(conf, client, Up, spd)
+					fmt.Println("Tilt up", spd)
+				}
+			}
+		case e := <-dpadMove:
+			// Joystick range is -1 to +1, multiply by 10 to make maths a little easier for my brain
+			// round to integer for more coarse stepping
+			x := int(math.Round(float64(e.(joysticks.CoordsEvent).X * 10)))
+			y := int(math.Round(float64(e.(joysticks.CoordsEvent).Y * 10)))
 
-			if math.Abs(float64(x)) > deadzone || math.Abs(float64(y)) > deadzone {
-				fmt.Printf("X: %v, Y: %v\n", x, y)
+			if math.Abs(float64(x)) < 2 && math.Abs(float64(y)) < 2 {
+				ptzStop(conf, client)
+				fmt.Println("Pan/Tilt Stopped")
+			}
+			if x > 2 {
+				ptzMove(conf, client, Right, "1")
+				fmt.Println("Panning right", "1")
+			}
+			if x < -2 {
+				ptzMove(conf, client, Left, "1")
+				fmt.Println("Panning left", "1")
+			}
+
+			if y > 2 {
+				ptzMove(conf, client, Down, "1")
+				fmt.Println("Tilt down", "1")
+			}
+			if y < -2 {
+				ptzMove(conf, client, Up, "1")
+				fmt.Println("Tilt up", "1")
 			}
 		}
-
 	}
 
+}
+
+func ptzStop(conf *Config, client *http.Client) {
+	res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=Down&arg1=0&arg2=1&arg3=0&arg4=0")
+	if err != nil {
+		fmt.Printf("Error moving camera: %v\n", err)
+		return
+	}
+	defer res.Body.Close()
+}
+
+func ptzMove(conf *Config, client *http.Client, dir, spd string) {
+	res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=" + dir + "&arg1=0&arg2=" + spd + "&arg3=0&arg4=0")
+	if err != nil {
+		fmt.Printf("Error moving camera: %v\n", err)
+		return
+	}
+	defer res.Body.Close()
 }
