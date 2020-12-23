@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/icholy/digest"
 	"github.com/splace/joysticks"
+	"github.com/use-go/onvif"
+	"github.com/use-go/onvif/ptz"
+	onvif2 "github.com/use-go/onvif/xsd/onvif"
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,10 +32,12 @@ type Config struct {
 }
 
 type Camera struct {
-	User   string       `yaml:"user"`
-	Pass   string       `yaml:"pass"`
-	URL    string       `yaml:"url"`
-	client *http.Client `yaml:"-"`
+	User       string        `yaml:"user"`
+	Pass       string        `yaml:"pass"`
+	URL        string        `yaml:"url"`
+	ONVIFToken string        `yaml:"onvif_profile_token"`
+	client     *http.Client  `yaml:"-"`
+	dev        *onvif.Device `yaml:"-"`
 }
 
 func main() {
@@ -69,6 +73,19 @@ func main() {
 	}
 
 	for i := range conf.Cameras {
+		dev, err := onvif.NewDevice(conf.Cameras[i].URL)
+		if err != nil {
+			fmt.Println("Error opening onvif device:", err)
+			continue
+		}
+		dev.Authenticate(conf.Cameras[i].User, conf.Cameras[i].Pass)
+		//resp, err := dev.CallMethod(media.GetProfiles{})
+		//if err != nil {
+		//	log.Println(err)
+		//} else {
+		//	fmt.Println(readResponse(resp))
+		//}
+		conf.Cameras[i].dev = dev
 		conf.Cameras[i].client = &http.Client{
 			Transport: &digest.Transport{
 				Username: conf.Cameras[i].User,
@@ -77,72 +94,98 @@ func main() {
 		}
 	}
 
-	device := joysticks.Connect(1)
-	go device.ParcelOutEvents()
+	joystick := joysticks.Connect(1)
+	go joystick.ParcelOutEvents()
 
 	if *showJoystick {
 		t := time.NewTicker(2 * time.Second)
 		for {
 			select {
 			case <-t.C:
-				fmt.Printf("Buttons: %v\n", device.Buttons)
-				fmt.Printf("Axis: %v\n", device.HatAxes)
+				fmt.Printf("Buttons: %v\n", joystick.Buttons)
+				fmt.Printf("Axis: %v\n", joystick.HatAxes)
 				//case e := <-device.OSEvents:
 				//	fmt.Printf("OS Event: %v\n", e)
 			}
 		}
 	}
 
-	aPress := device.OnClose(1)
-	aUnpress := device.OnOpen(1)
-	bPress := device.OnClose(2)
-	bUnpress := device.OnOpen(2)
-	xPress := device.OnClose(3)
-	leftMove := device.OnMove(1)
-	dpadMove := device.OnMove(4)
+	aPress := joystick.OnClose(1)
+	aUnpress := joystick.OnOpen(1)
+	bPress := joystick.OnClose(2)
+	bUnpress := joystick.OnOpen(2)
+	xPress := joystick.OnClose(3)
+	leftMove := joystick.OnMove(1)
+	dpadMove := joystick.OnMove(4)
 
-	prevX := 0
-	prevY := 0
+	prevX := 0.0
+	prevY := 0.0
 	activeCameraIdx := 0
 	activeCamera := conf.Cameras[0]
 
+	fmt.Println("Running...")
 	for {
 		select {
 		case <-aPress:
 			fmt.Println("Zoom Out Button Pushed")
-			res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomWide&arg1=0&arg2=1&arg3=0&arg4=0")
-			if err != nil {
-				fmt.Printf("Error zooming in: %v\n", err)
-				continue
+			zi := ptz.ContinuousMove{
+				ProfileToken: onvif2.ReferenceToken(activeCamera.ONVIFToken),
+				Velocity: onvif2.PTZSpeed{
+					Zoom: onvif2.Vector1D{
+						X: -0.8,
+					},
+				},
+				Timeout: "PT10S",
 			}
-			fmt.Println("Zoom in return: ", res.StatusCode)
-			res.Body.Close()
+			resp, err := activeCamera.dev.CallMethod(zi)
+			if err != nil {
+				log.Println(err)
+			} else {
+				fmt.Println(readResponse(resp))
+			}
 		case <-aUnpress:
 			fmt.Println("Zoom Out Button Unpushed")
-			res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomWide&arg1=0&arg2=1&arg3=0&arg4=0")
-			if err != nil {
-				fmt.Printf("Error zooming out: %v\n", err)
-				continue
+			zs := ptz.Stop{
+				ProfileToken: onvif2.ReferenceToken(activeCamera.ONVIFToken),
+				PanTilt:      true,
+				Zoom:         true,
 			}
-			fmt.Println("Zoom out return: ", res.StatusCode)
+			resp, err := activeCamera.dev.CallMethod(zs)
+			if err != nil {
+				log.Println(err)
+			} else {
+				fmt.Println(readResponse(resp))
+			}
 		case <-bPress:
 			fmt.Println("Zoom In Button Pushed")
-			res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomTele&arg1=0&arg2=1&arg3=0&arg4=0")
-			if err != nil {
-				fmt.Printf("Error zooming in: %v\n", err)
-				continue
+			zi := ptz.ContinuousMove{
+				ProfileToken: onvif2.ReferenceToken(activeCamera.ONVIFToken),
+				Velocity: onvif2.PTZSpeed{
+					Zoom: onvif2.Vector1D{
+						X: 0.8,
+					},
+				},
+				Timeout: "PT10S",
 			}
-			fmt.Println("Zoom in return: ", res.StatusCode)
-			res.Body.Close()
+			resp, err := activeCamera.dev.CallMethod(zi)
+			if err != nil {
+				log.Println(err)
+			} else {
+				fmt.Println(readResponse(resp))
+			}
 		case <-bUnpress:
 			fmt.Println("Zoom In Button Unpushed")
-			res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomTele&arg1=0&arg2=1&arg3=0&arg4=0")
-			if err != nil {
-				fmt.Printf("Error zooming out: %v\n", err)
-				continue
+			zs := ptz.Stop{
+				ProfileToken: onvif2.ReferenceToken(activeCamera.ONVIFToken),
+				PanTilt:      true,
+				Zoom:         true,
 			}
-			fmt.Println("Zoom out return: ", res.StatusCode)
-			res.Body.Close()
+			resp, err := activeCamera.dev.CallMethod(zs)
+			if err != nil {
+				log.Println(err)
+			} else {
+				fmt.Println(readResponse(resp))
+			}
 		case <-xPress:
 			fmt.Println("Changing camera")
 			activeCameraIdx++
@@ -154,42 +197,38 @@ func main() {
 		case e := <-leftMove:
 			// Joystick range is -1 to +1, multiply by 10 to make maths a little easier for my brain
 			// round to integer for more coarse stepping
-			x := int(math.Round(float64(e.(joysticks.CoordsEvent).X * 10)))
-			y := int(math.Round(float64(e.(joysticks.CoordsEvent).Y * 10)))
+			x := math.Round(float64(e.(joysticks.CoordsEvent).X * 10))
+			y := math.Round(float64(e.(joysticks.CoordsEvent).Y * 10))
 
 			if x != prevX {
 				prevX = x
 				if math.Abs(float64(x)) < 2 {
-					ptzStop(conf, &activeCamera)
+					ptzStop(&activeCamera)
 					fmt.Println("Pan Stopped")
 				}
 				if x > 2 {
-					spd := strconv.Itoa(x - 2)
-					ptzMove(conf, &activeCamera, Right, spd)
-					fmt.Println("Panning right", spd)
+					ptMove(&activeCamera, x/10, -y/10)
+					fmt.Println("Panning right")
 				}
 				if x < -2 {
-					spd := strconv.Itoa(int(math.Abs(float64(x + 2))))
-					ptzMove(conf, &activeCamera, Left, spd)
-					fmt.Println("Panning left", spd)
+					ptMove(&activeCamera, x/10, -y/10)
+					fmt.Println("Panning left")
 				}
 			}
 
 			if y != prevY {
 				prevY = y
 				if math.Abs(float64(y)) < 2 {
-					ptzStop(conf, &activeCamera)
+					ptzStop(&activeCamera)
 					fmt.Println("Tilt Stopped")
 				}
 				if y > 2 {
-					spd := strconv.Itoa(y - 2)
-					ptzMove(conf, &activeCamera, Down, spd)
-					fmt.Println("Tilt down", spd)
+					ptMove(&activeCamera, x/10, -y/10)
+					fmt.Println("Tilt down")
 				}
 				if y < -2 {
-					spd := strconv.Itoa(int(math.Abs(float64(y + 2))))
-					ptzMove(conf, &activeCamera, Up, spd)
-					fmt.Println("Tilt up", spd)
+					ptMove(&activeCamera, x/10, -y/10)
+					fmt.Println("Tilt up")
 				}
 			}
 		case e := <-dpadMove:
@@ -199,24 +238,24 @@ func main() {
 			y := int(math.Round(float64(e.(joysticks.CoordsEvent).Y * 10)))
 
 			if math.Abs(float64(x)) < 2 && math.Abs(float64(y)) < 2 {
-				ptzStop(conf, &activeCamera)
+				ptzStop(&activeCamera)
 				fmt.Println("Pan/Tilt Stopped")
 			}
 			if x > 2 {
-				ptzMove(conf, &activeCamera, Right, "1")
+				ptMove(&activeCamera, 0.1, 0)
 				fmt.Println("Panning right", "1")
 			}
 			if x < -2 {
-				ptzMove(conf, &activeCamera, Left, "1")
+				ptMove(&activeCamera, -0.1, 0)
 				fmt.Println("Panning left", "1")
 			}
 
 			if y > 2 {
-				ptzMove(conf, &activeCamera, Down, "1")
+				ptMove(&activeCamera, 0, -0.1)
 				fmt.Println("Tilt down", "1")
 			}
 			if y < -2 {
-				ptzMove(conf, &activeCamera, Up, "1")
+				ptMove(&activeCamera, 0, 0.1)
 				fmt.Println("Tilt up", "1")
 			}
 		}
@@ -224,20 +263,43 @@ func main() {
 
 }
 
-func ptzStop(conf *Config, activeCamera *Camera) {
-	res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=Down&arg1=0&arg2=1&arg3=0&arg4=0")
+func readResponse(resp *http.Response) string {
+	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Printf("Error moving camera: %v\n", err)
-		return
+		panic(err)
 	}
-	defer res.Body.Close()
+	return string(b)
 }
 
-func ptzMove(conf *Config, activeCamera *Camera, dir, spd string) {
-	res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=" + dir + "&arg1=0&arg2=" + spd + "&arg3=0&arg4=0")
-	if err != nil {
-		fmt.Printf("Error moving camera: %v\n", err)
-		return
+func ptzStop(activeCamera *Camera) {
+	zs := ptz.Stop{
+		ProfileToken: onvif2.ReferenceToken(activeCamera.ONVIFToken),
+		PanTilt:      true,
+		Zoom:         true,
 	}
-	defer res.Body.Close()
+	resp, err := activeCamera.dev.CallMethod(zs)
+	if err != nil {
+		log.Println(err)
+	} else {
+		fmt.Println(readResponse(resp))
+	}
+}
+
+func ptMove(activeCamera *Camera, x, y float64) {
+	mv := ptz.ContinuousMove{
+		ProfileToken: onvif2.ReferenceToken(activeCamera.ONVIFToken),
+		Velocity: onvif2.PTZSpeed{
+			PanTilt: onvif2.Vector2D{
+				X: x,
+				Y: y,
+			},
+		},
+		Timeout: "PT10S",
+	}
+	resp, err := activeCamera.dev.CallMethod(mv)
+	if err != nil {
+		log.Println(err)
+	} else {
+		fmt.Println(readResponse(resp))
+	}
 }
