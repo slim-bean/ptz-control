@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/icholy/digest"
 	"github.com/splace/joysticks"
@@ -35,6 +37,9 @@ type Camera struct {
 }
 
 func main() {
+	showJoystick := flag.Bool("show-joystick", false, "print the buttons and axis from a joystick")
+	flag.Parse()
+
 	// catch signals and terminate the app
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc,
@@ -73,18 +78,32 @@ func main() {
 	}
 
 	device := joysticks.Connect(1)
+	go device.ParcelOutEvents()
+
+	if *showJoystick {
+		t := time.NewTicker(2 * time.Second)
+		for {
+			select {
+			case <-t.C:
+				fmt.Printf("Buttons: %v\n", device.Buttons)
+				fmt.Printf("Axis: %v\n", device.HatAxes)
+				//case e := <-device.OSEvents:
+				//	fmt.Printf("OS Event: %v\n", e)
+			}
+		}
+	}
 
 	aPress := device.OnClose(1)
 	aUnpress := device.OnOpen(1)
 	bPress := device.OnClose(2)
 	bUnpress := device.OnOpen(2)
+	xPress := device.OnClose(3)
 	leftMove := device.OnMove(1)
 	dpadMove := device.OnMove(4)
 
-	go device.ParcelOutEvents()
-
 	prevX := 0
 	prevY := 0
+	activeCameraIdx := 0
 	activeCamera := conf.Cameras[0]
 
 	for {
@@ -124,6 +143,14 @@ func main() {
 			}
 			fmt.Println("Zoom out return: ", res.StatusCode)
 			res.Body.Close()
+		case <-xPress:
+			fmt.Println("Changing camera")
+			activeCameraIdx++
+			if activeCameraIdx >= len(conf.Cameras) {
+				activeCameraIdx = 0
+			}
+			activeCamera = conf.Cameras[activeCameraIdx]
+			fmt.Println("New camera idx:", activeCameraIdx)
 		case e := <-leftMove:
 			// Joystick range is -1 to +1, multiply by 10 to make maths a little easier for my brain
 			// round to integer for more coarse stepping
