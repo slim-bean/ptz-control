@@ -17,17 +17,21 @@ import (
 )
 
 const (
-	deadzone = 0.1
-	Up       = "Up"
-	Down     = "Down"
-	Left     = "Left"
-	Right    = "Right"
+	Up    = "Up"
+	Down  = "Down"
+	Left  = "Left"
+	Right = "Right"
 )
 
 type Config struct {
-	User string `yaml:"user"`
-	Pass string `yaml:"pass"`
-	URL  string `yaml:"url"`
+	Cameras []Camera `yaml:"cameras"`
+}
+
+type Camera struct {
+	User   string       `yaml:"user"`
+	Pass   string       `yaml:"pass"`
+	URL    string       `yaml:"url"`
+	client *http.Client `yaml:"-"`
 }
 
 func main() {
@@ -59,11 +63,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := &http.Client{
-		Transport: &digest.Transport{
-			Username: conf.User,
-			Password: conf.Pass,
-		},
+	for i := range conf.Cameras {
+		conf.Cameras[i].client = &http.Client{
+			Transport: &digest.Transport{
+				Username: conf.Cameras[i].User,
+				Password: conf.Cameras[i].Pass,
+			},
+		}
 	}
 
 	device := joysticks.Connect(1)
@@ -79,12 +85,13 @@ func main() {
 
 	prevX := 0
 	prevY := 0
+	activeCamera := conf.Cameras[0]
 
 	for {
 		select {
 		case <-aPress:
 			fmt.Println("Zoom Out Button Pushed")
-			res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomWide&arg1=0&arg2=1&arg3=0&arg4=0")
+			res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomWide&arg1=0&arg2=1&arg3=0&arg4=0")
 			if err != nil {
 				fmt.Printf("Error zooming in: %v\n", err)
 				continue
@@ -93,7 +100,7 @@ func main() {
 			res.Body.Close()
 		case <-aUnpress:
 			fmt.Println("Zoom Out Button Unpushed")
-			res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomWide&arg1=0&arg2=1&arg3=0&arg4=0")
+			res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomWide&arg1=0&arg2=1&arg3=0&arg4=0")
 			if err != nil {
 				fmt.Printf("Error zooming out: %v\n", err)
 				continue
@@ -101,7 +108,7 @@ func main() {
 			fmt.Println("Zoom out return: ", res.StatusCode)
 		case <-bPress:
 			fmt.Println("Zoom In Button Pushed")
-			res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomTele&arg1=0&arg2=1&arg3=0&arg4=0")
+			res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomTele&arg1=0&arg2=1&arg3=0&arg4=0")
 			if err != nil {
 				fmt.Printf("Error zooming in: %v\n", err)
 				continue
@@ -110,7 +117,7 @@ func main() {
 			res.Body.Close()
 		case <-bUnpress:
 			fmt.Println("Zoom In Button Unpushed")
-			res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomTele&arg1=0&arg2=1&arg3=0&arg4=0")
+			res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomTele&arg1=0&arg2=1&arg3=0&arg4=0")
 			if err != nil {
 				fmt.Printf("Error zooming out: %v\n", err)
 				continue
@@ -126,17 +133,17 @@ func main() {
 			if x != prevX {
 				prevX = x
 				if math.Abs(float64(x)) < 2 {
-					ptzStop(conf, client)
+					ptzStop(conf, &activeCamera)
 					fmt.Println("Pan Stopped")
 				}
 				if x > 2 {
 					spd := strconv.Itoa(x - 2)
-					ptzMove(conf, client, Right, spd)
+					ptzMove(conf, &activeCamera, Right, spd)
 					fmt.Println("Panning right", spd)
 				}
 				if x < -2 {
 					spd := strconv.Itoa(int(math.Abs(float64(x + 2))))
-					ptzMove(conf, client, Left, spd)
+					ptzMove(conf, &activeCamera, Left, spd)
 					fmt.Println("Panning left", spd)
 				}
 			}
@@ -144,17 +151,17 @@ func main() {
 			if y != prevY {
 				prevY = y
 				if math.Abs(float64(y)) < 2 {
-					ptzStop(conf, client)
+					ptzStop(conf, &activeCamera)
 					fmt.Println("Tilt Stopped")
 				}
 				if y > 2 {
 					spd := strconv.Itoa(y - 2)
-					ptzMove(conf, client, Down, spd)
+					ptzMove(conf, &activeCamera, Down, spd)
 					fmt.Println("Tilt down", spd)
 				}
 				if y < -2 {
 					spd := strconv.Itoa(int(math.Abs(float64(y + 2))))
-					ptzMove(conf, client, Up, spd)
+					ptzMove(conf, &activeCamera, Up, spd)
 					fmt.Println("Tilt up", spd)
 				}
 			}
@@ -165,24 +172,24 @@ func main() {
 			y := int(math.Round(float64(e.(joysticks.CoordsEvent).Y * 10)))
 
 			if math.Abs(float64(x)) < 2 && math.Abs(float64(y)) < 2 {
-				ptzStop(conf, client)
+				ptzStop(conf, &activeCamera)
 				fmt.Println("Pan/Tilt Stopped")
 			}
 			if x > 2 {
-				ptzMove(conf, client, Right, "1")
+				ptzMove(conf, &activeCamera, Right, "1")
 				fmt.Println("Panning right", "1")
 			}
 			if x < -2 {
-				ptzMove(conf, client, Left, "1")
+				ptzMove(conf, &activeCamera, Left, "1")
 				fmt.Println("Panning left", "1")
 			}
 
 			if y > 2 {
-				ptzMove(conf, client, Down, "1")
+				ptzMove(conf, &activeCamera, Down, "1")
 				fmt.Println("Tilt down", "1")
 			}
 			if y < -2 {
-				ptzMove(conf, client, Up, "1")
+				ptzMove(conf, &activeCamera, Up, "1")
 				fmt.Println("Tilt up", "1")
 			}
 		}
@@ -190,8 +197,8 @@ func main() {
 
 }
 
-func ptzStop(conf *Config, client *http.Client) {
-	res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=Down&arg1=0&arg2=1&arg3=0&arg4=0")
+func ptzStop(conf *Config, activeCamera *Camera) {
+	res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=stop&channel=0&code=Down&arg1=0&arg2=1&arg3=0&arg4=0")
 	if err != nil {
 		fmt.Printf("Error moving camera: %v\n", err)
 		return
@@ -199,8 +206,8 @@ func ptzStop(conf *Config, client *http.Client) {
 	defer res.Body.Close()
 }
 
-func ptzMove(conf *Config, client *http.Client, dir, spd string) {
-	res, err := client.Get(conf.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=" + dir + "&arg1=0&arg2=" + spd + "&arg3=0&arg4=0")
+func ptzMove(conf *Config, activeCamera *Camera, dir, spd string) {
+	res, err := activeCamera.client.Get(activeCamera.URL + "/cgi-bin/ptz.cgi?action=start&channel=0&code=" + dir + "&arg1=0&arg2=" + spd + "&arg3=0&arg4=0")
 	if err != nil {
 		fmt.Printf("Error moving camera: %v\n", err)
 		return
