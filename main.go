@@ -21,10 +21,7 @@ import (
 )
 
 const (
-	Up    = "Up"
-	Down  = "Down"
-	Left  = "Left"
-	Right = "Right"
+	ptzSpeedScale = 0.25
 )
 
 type Config struct {
@@ -207,11 +204,11 @@ func main() {
 					fmt.Println("Pan Stopped")
 				}
 				if x > 2 {
-					ptMove(&activeCamera, x/10, -y/10)
+					ptMove(&activeCamera, x/10*ptzSpeedScale, -y/10*ptzSpeedScale)
 					fmt.Println("Panning right")
 				}
 				if x < -2 {
-					ptMove(&activeCamera, x/10, -y/10)
+					ptMove(&activeCamera, x/10*ptzSpeedScale, -y/10*ptzSpeedScale)
 					fmt.Println("Panning left")
 				}
 			}
@@ -223,11 +220,11 @@ func main() {
 					fmt.Println("Tilt Stopped")
 				}
 				if y > 2 {
-					ptMove(&activeCamera, x/10, -y/10)
+					ptMove(&activeCamera, x/10*ptzSpeedScale, -y/10*ptzSpeedScale)
 					fmt.Println("Tilt down")
 				}
 				if y < -2 {
-					ptMove(&activeCamera, x/10, -y/10)
+					ptMove(&activeCamera, x/10*ptzSpeedScale, -y/10*ptzSpeedScale)
 					fmt.Println("Tilt up")
 				}
 			}
